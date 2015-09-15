@@ -1,8 +1,3 @@
-/*
- * Copyright 2014 Seecrypt
- *
- */
-
 #include "ubertooth.h"
 #include <stdio.h>
 #include <time.h>
