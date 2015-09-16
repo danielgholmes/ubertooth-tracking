@@ -171,24 +171,51 @@ int main(void)
 	int samples = 1; // counter for number of samples
 	float n = 0.0; // signal propagation constant
 	int A = 0; // rssi at 1m
+	int rssi = 0;
 	int total = 0;
+	int max_dist = 10;
+	float n_total = 0;
     struct libusb_device_handle *devh = NULL;
+    char enter;
 
     devh = init_ubertooth();
 
     ubertooth_rx rx_data;
 
+    printf("Calculation of the average of A at 1m. Press enter when ready.\n");
+	enter = getchar();
+
 	while (samples <= 1000) {
 		rx_data = get_ubertooth_data(devh, &samples, &total);
 	}
 
+    A = (total/samples)*(-1.0);
+    printf("Average of A: %d\n", A);
     ubertooth_stop(devh);
 
-    A = (total/samples)*(-1.0);
+    printf("Calculation of n.\n");
+    int d = 0;
+    for (d = 1; d < max_dist + 1; ++d)
+    {
+    	devh = init_ubertooth();
+    	samples = 0;
+    	total = 0;
+    	rssi = 0;
+    	printf("Move to %dm and press enter.\n", d);
+    	enter = getchar();
 
-    printf("Average of A: %d\n", A);
-    // printf("Average of n: %f\n", n);
+    	while (samples <= 500) {
+			rx_data = get_ubertooth_data(devh, &samples, &total);
+		}
 
+		rssi = (total/samples)*(-1.0);
+		n_total += (float)rssi/((float)A - 10.0*logf((float)d));
+		ubertooth_stop(devh);
+    }
+
+    n = n_total/(float)max_dist;
+    printf("n = %f\n", n);
+    
     return 0;
 }
 
