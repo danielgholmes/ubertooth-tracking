@@ -5,10 +5,13 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <math.h>
 
 #define BUF_SIZE 1024
 #define SEND_RSSI_MSG_SIZE 32
 #define RSSI_BASE -54
+#define SIGNAL_PROP_CONST 0.77634 // in free space
+#define REF_RSSI -19.0
 #define ADV_CHANNEL 2402 // channel 37
 #define ID_FILENAME "/home/daniel/pi/id.txt"
 
@@ -26,36 +29,28 @@
 typedef struct _le_packet_t {
 	// raw unwhitened bytes of packet, including access address
 	uint8_t symbols[MAX_LE_SYMBOLS];
-
 	uint32_t access_address;
-
 	// channel index
 	uint8_t channel_idx;
-
 	// number of symbols
 	int length;
-
 	uint32_t clk100ns;
-
 	// advertising packet header info
 	uint8_t adv_type;
 	int adv_tx_add;
 	int adv_rx_add;
 } le_packet_t;
 
-char id; 
-
 typedef struct { // used for easily moving around the data
-	char rec_type;
-	char logger_id;
+	char id[8];
 	char local_name[100]; // assumption of length, may need to change this
-	char rssi;
-	long double timestamp;
+	char rssi[8] ;
+	char distance[32];
+	char timestamp[32];
 } ubertooth_rx;
 
-void get_id()
+void get_id(char *id)
 {
-	char line[4];
 	FILE *fp;
 	fp = fopen(ID_FILENAME,"r");
 
@@ -65,9 +60,10 @@ void get_id()
 		return;
 	}
 
-	fgets(line, sizeof(line) - 1, fp);
-	id = atoi(line);
+	fgets(id, sizeof(id) - 1, fp);
+	strtok(id, "\n");
 	fclose(fp);
+	return;
 }
 
 libusb_device_handle* init_ubertooth()
@@ -124,22 +120,15 @@ void connect_to_server(int *sockfd, char *hostname, int port, struct sockaddr_in
     puts("Connected\n");
 }
 
-void send_to_server(int from_socket, const struct sockaddr_in *server_addr, ubertooth_rx *data)
+void send_to_server(int from_socket, const struct sockaddr_in *server_addr, char *message)
 {
-	int n;
-	n = 0;
+	int n = 0;
 
-	printf("Sending...\n");
-
-    char buf[50];
-   	snprintf(buf,50,"%Lf",data->timestamp);
-
-	if (data->rec_type == 0x01)
-		n = send(from_socket, buf, strlen(buf), 0);
+ 	n = send(from_socket, message, strlen(message), 0);
     
-    printf("%s has been sent!\n", buf);
+    printf("%s has been sent!\n", message);
     if (n < 0)
-      error("ERROR in sendto");
+    	error("ERROR in sendto");
 }
 
 // from bluetooth_le_packet.c
@@ -167,9 +156,7 @@ void get_local_name(le_packet_t *le_pkt, ubertooth_rx *rx) { // was le_print
 					}
 					type = buf[pos];
 					if (type == 0x09){
-						printf("Complete Local Name: "); // remove on UberPi
 						for (i = 1; i < sublen; ++i){
-							printf("%c", isprint(buf[pos+i]) ? buf[pos+i] : '.'); // remove on UberPi
 							rx->local_name[i-1] = buf[pos+i];
 						}
 					}
@@ -178,27 +165,22 @@ void get_local_name(le_packet_t *le_pkt, ubertooth_rx *rx) { // was le_print
 			}
 		}
 	}
-	printf("\n"); // remove on UberPi
-	int i;
-	printf("Saved Local Name: "); // remove on UberPi
-	for (i = 0; i < strlen(rx->local_name)-1; ++i){
-		printf("%c", rx->local_name[i]);
-	}
-	printf("\n");
+}
+
+float calculate_distance(int rssi)
+{
+	return powf(10.0, (REF_RSSI - (float)rssi)/10.0*SIGNAL_PROP_CONST);
 }
 
 ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *new_data)
 {
 	int i;
-	int8_t rssi;
+	int rssi;
 	ubertooth_rx rx = {0};
 	le_packet_t le_pkt;
 	usb_pkt_rx usb_pkt;
 
-	rx.rec_type = 0x00;
-	rx.logger_id = id; // should do this once in main
-
-	int r = cmd_poll(devh, &usb_pkt);
+	int r = cmd_poll(devh, &usb_pkt); // problem here for local names that have integer values in them
 	if (r < 0) 
 		printf("USB error\n");
 	
@@ -206,50 +188,59 @@ ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *new_data
 	{
 		decode_le(usb_pkt.data, usb_pkt.channel + ADV_CHANNEL, usb_pkt.clk100ns, &le_pkt);
 
-		rx.rec_type = 0x01;
-		rx.rssi = usb_pkt.rssi_max + RSSI_BASE;
-    	
     	// can make a function here
     	struct timeval tv;
-    	gettimeofday(&tv,NULL);
-    	printf("tv_sec = %ld\n", tv.tv_sec); // remove on UberPi
-   		printf("tv_usec = %ld\n", tv.tv_usec); // remove on UberPi
+    	gettimeofday(&tv, NULL);
    		long double tmstamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
+   		rssi = usb_pkt.rssi_max + RSSI_BASE;
 
-    	rx.timestamp = tmstamp;
-    	printf("Saved Timestamp: %Lf\n", rx.timestamp); // remove on UberPi
+		sprintf(rx.rssi,"%i", rssi);
+		sprintf(rx.distance,"%f", calculate_distance(rssi));
+    	sprintf(rx.timestamp,"%Lf", tmstamp);
 
 		get_local_name(&le_pkt, &rx);
-		rssi = usb_pkt.rssi_max + RSSI_BASE;
-		printf("\t RSSI: %d \n", rssi); // remove on UberPi
 
 		*new_data = 1;
 		return rx;
 	}
 }
+// id, local name, distance, timestamp
+void create_message(char *arg1, char *arg2, char *arg3, char *arg4, char *buffer)
+{
+    strcpy(buffer, arg1);
+    strcat(buffer, ",");
+    strcat(buffer, arg2);
+    strcat(buffer, ",");
+    strcat(buffer, arg3);
+    strcat(buffer, ",");
+    strcat(buffer, arg4);
+    return;
+}
 
 int main(void) 
 {
+	char id[4];
+	char message[1024]; 
     int sockfd, server_port, client_port, new_data;
     struct sockaddr_in server_addr;
     char *server_ip, *client_ip;
     struct libusb_device_handle *devh = NULL;
+    ubertooth_rx rx_data;
 
-    server_ip = "192.168.1.3";
+    server_ip = "127.0.0.1";
     server_port = 4040;
     new_data = 0;
 
+  	get_id(id);
     devh = init_ubertooth();
-
     connect_to_server(&sockfd, server_ip, server_port, &server_addr);
-    get_id();
-
-    ubertooth_rx rx_data;
-
+    
 	while (1) {
-		rx_data = get_ubertooth_data(devh, &new_data); // should pass in rx_data as a pointer
-		if (new_data){
-			send_to_server(sockfd, &server_addr, &rx_data);
+		rx_data = get_ubertooth_data(devh, &new_data); // should pass in rx_data as a pointer, for consistancy
+		if (new_data && (strcmp(rx_data.local_name, "iPhone") == 0)){
+			bzero(message, 1023);
+			create_message(id, rx_data.local_name, rx_data.distance, rx_data.timestamp, message); 
+			send_to_server(sockfd, &server_addr, message); 
 			new_data = 0;
 		}
 	}

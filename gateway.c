@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h> 
@@ -32,8 +33,7 @@ void append_timestamp(char *str)
 
 void send_to_sarm(int from_socket, char *message)
 {
-    int n;
-    n = 0;
+    int n = 0;
 
     printf("Sending...\n");
     n = send(from_socket, message, strlen(message), 0);
@@ -43,23 +43,45 @@ void send_to_sarm(int from_socket, char *message)
       error("ERROR in sendto");
 }
 
-void init_gateway_server()
+void init_gateway_server(int *sockfd, int *client_sockfd, int port, struct sockaddr_in *server_addr, struct sockaddr_in *client_addr)
 {
-    return;
+    printf("Initialising gateway server...\n");
+    socklen_t client_len;
+
+    *sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (*sockfd < 0) 
+        error("ERROR opening socket");
+
+    bzero((char *) server_addr, sizeof(*server_addr));
+    server_addr->sin_family = AF_INET;
+    server_addr->sin_addr.s_addr = INADDR_ANY;
+    server_addr->sin_port = htons(port);
+
+    if (bind(*sockfd, (struct sockaddr *) server_addr, sizeof(*server_addr)) < 0) 
+        error("ERROR on binding");
+
+    listen(*sockfd,3);
+
+    client_len = sizeof(*client_addr);
+    *client_sockfd = accept(*sockfd, (struct sockaddr *) client_addr, &client_len);
+
+    if (*client_sockfd < 0) 
+        error("ERROR on accept");
+
+    printf("Done!\n");
 }
 
 void connect_to_sarm(int *sockfd, char *hostname, int port, struct sockaddr_in *server_addr)
 {
-
     *sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0)
+    if (*sockfd < 0)
         error("ERROR opening socket");
 
     struct hostent *server;
     server = gethostbyname(hostname);
     if (server == NULL) 
     {
-        fprintf(stderr,"ERROR, no such host as %s\n", hostname);
+        fprintf(stderr,"ERROR no such host as %s\n", hostname);
         exit(0);
     }
 
@@ -68,65 +90,121 @@ void connect_to_sarm(int *sockfd, char *hostname, int port, struct sockaddr_in *
     bcopy((char *)server->h_addr, (char *)&(server_addr->sin_addr.s_addr), server->h_length);
     server_addr->sin_port = htons(port);
 
-    printf("Attempting to connect...\n");
+    printf("Attempting to connect to SARM...\n");
     if (connect(*sockfd, (struct sockaddr *)server_addr, sizeof(*server_addr)) < 0)
     {
-        perror("Connect failed. Error");
+        perror("ERROR connect failed ");
         return;
     }
 
     puts("Connected\n");
 }
 
-int main(int argc, char *argv[])
+void get_random_position(char *x_char, char *y_char) // temporary function
 {
-    int sockfd, sarm_sockfd, newsockfd, portno, sarm_portno;
-    socklen_t clilen;
+    float a = 5.0;
+    float x = 0.0;
+    float y = 0.0;
+
+    x = ((float)rand()/(float)(RAND_MAX)) * a;
+    y = ((float)rand()/(float)(RAND_MAX)) * a;
+
+    snprintf(x_char, 8, "%f", x);
+    snprintf(y_char, 8, "%f", y);
+    
+    return;
+}
+
+void get_timestamp(char *str)
+{
+    struct timeval tv;
+    gettimeofday(&tv,NULL);
+    long double timestamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
+    snprintf(str, 32, "%Lf", timestamp);
+    return;
+}
+
+void create_message(char *arg1, char *arg2, char *arg3, char *arg4, char *buffer)
+{
+    strcpy(buffer, arg1);
+    strcat(buffer, ",");
+    strcat(buffer, arg2);
+    strcat(buffer, ",");
+    strcat(buffer, arg3);
+    strcat(buffer, ",");
+    strcat(buffer, arg4);
+    return;
+}
+
+// void split_message(char message[])
+// {
+//     char msg_elemets[5][64];
+
+//     int i = 0;
+//     char *pch;
+//     pch = strtok(message, ",");
+
+//     while (pch != NULL)
+//     {
+//         strcpy(msg_elemets[i], pch);
+//         pch = strtok(NULL, ",");
+//         i++;
+//     }
+
+//     for (i = 0; i < 4; ++i)
+//     {
+//         printf("%s\n", msg_elemets[i]);
+//     }
+
+//     return;
+// }
+
+int main(int argc, char *argv[])
+{ 
+    // char message[] = "1,iPhone,0.409100,1442411281.117428";
+    // split_message(message);   
+    
+    int sockfd, sarm_sockfd, client_sockfd, portno, sarm_portno;
     char buffer[1024];
-    struct sockaddr_in serv_addr, cli_addr, sarm_addr;
+    char message[1024];
+    struct sockaddr_in server_addr, client_addr, sarm_addr;
     int n;
     char *sarm_ip;
+
+    // used for sending to SARM
+    char local_name[32];
+    char x[8];
+    char y[8];
+    char timestamp[32];
 
     sarm_ip = "192.168.1.3";
     sarm_portno = 4040;
 
     if (argc < 2) {
-        fprintf(stderr,"ERROR, no port provided\n");
+        fprintf(stderr,"ERROR no port provided\n");
         exit(1);
     }
-
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) 
-        error("ERROR opening socket");
-
-    connect_to_sarm(&sarm_sockfd, sarm_ip, sarm_portno, &sarm_addr);
-
-    bzero((char *) &serv_addr, sizeof(serv_addr));
     portno = atoi(argv[1]);
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(portno);
 
-    if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) 
-        error("ERROR on binding");
-
-    listen(sockfd,5);
-
-    clilen = sizeof(cli_addr);
-    newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-
-    if (newsockfd < 0) 
-        error("ERROR on accept");
+    //connect_to_sarm(&sarm_sockfd, sarm_ip, sarm_portno, &sarm_addr);
+    init_gateway_server(&sockfd, &client_sockfd, portno, &server_addr, &client_addr);
 
     while(1){
         bzero(buffer, 1024);
-        n = read(newsockfd, buffer, 1023);
-        if (n < 0) error("ERROR reading from socket");
-        printf("Here is the message: %s\n", buffer);
-        append_timestamp(buffer);
-        send_to_sarm(sarm_sockfd, buffer);
+        bzero(message, 1024);
+
+        n = read(client_sockfd, buffer, 1023);
+        if (n < 0) 
+            error("ERROR reading from socket\n");
+
+        get_timestamp(timestamp);
+        get_random_position(x, y); // temporary
+        create_message(buffer, x, y, timestamp, message);
+        printf("Received: %s\n", message);
+        //send_to_sarm(sarm_sockfd, message);
     }
 
+    close(client_sockfd);
     close(sockfd);
     close(sarm_sockfd);
     return 0; 
