@@ -7,6 +7,92 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <gsl/gsl_vector.h>
+#include <gsl/gsl_blas.h>
+#include <gsl/gsl_multifit_nlin.h>
+
+#define N 3
+
+typedef struct
+{
+    double x;
+    double y;
+} position;
+
+typedef struct
+{
+    position pos;
+    int r;
+} circle;
+
+struct data {
+    size_t n;
+    double *_x;
+    double *_y;
+    double *_r;
+};
+
+int circle_f(const gsl_vector *x, void *data, gsl_vector *f)
+{
+    size_t n = ((struct data *)data)->n;
+    double *_x = ((struct data *)data)->_x;
+    double *_y = ((struct data *) data)->_y;
+    double *_r = ((struct data *) data)->_r; 
+
+    double x_e = gsl_vector_get(x, 0);
+    double y_e = gsl_vector_get(x, 1);
+
+    size_t i;
+
+    for (i = 0; i < n; i++)
+    {
+        double t = i;
+        double y_i = _r[i] - sqrt(pow(_x[i] - x_e, 2.0) + pow(_y[i] - y_e, 2.0));
+        gsl_vector_set(f, i, y_i);
+    }
+
+    return GSL_SUCCESS;
+}
+
+int circle_df(const gsl_vector *x, void *data, gsl_matrix *J)
+{
+    size_t n = ((struct data *)data)->n;
+    double *_x = ((struct data *) data)->_x;
+    double *_y = ((struct data *) data)->_y;
+
+    double x_e = gsl_vector_get(x, 0);
+    double y_e = gsl_vector_get(x, 1);
+
+    size_t i;
+
+    for (i = 0; i < n; i++)
+    {
+        double n1 = _x[i] - x_e;
+        double n2 = _y[i] - y_e;
+        double denom = sqrt(pow(_x[i] - x_e, 2.0) + pow(_y[i] - y_e, 2.0));
+        gsl_matrix_set (J, i, 0, n1/denom); 
+        gsl_matrix_set (J, i, 1, n2/denom);
+    }
+    return GSL_SUCCESS;
+}
+
+int circle_fdf(const gsl_vector *x, void *data, gsl_vector *f, gsl_matrix *J)
+{
+    circle_f(x, data, f);
+    circle_df(x, data, J);
+
+    return GSL_SUCCESS;
+}
+
+void print_state (size_t iter, gsl_multifit_fdfsolver * s)
+{
+    printf ("iter: %3u x = % 15.8f % 15.8f % 15.8f "
+            "|f(x)| = %g\n",
+            iter,
+            gsl_vector_get(s->x, 0), 
+            gsl_vector_get(s->x, 1),
+            gsl_blas_dnrm2(s->f));
+}
 
 void error(const char *msg)
 {
@@ -144,8 +230,63 @@ void get_message_elements(char message[1024], char rx_strings[4][64])
     return;
 }
 
+position trilateration(circle circle_1, circle circle_2, circle circle_3)
+{
+    position result;
+    const gsl_multifit_fdfsolver_type *T;
+    gsl_multifit_fdfsolver *s;
+    int status;
+    unsigned int i, iter = 0;
+    const size_t n = N;
+    const size_t p = 2;
+
+    double _x[N] = {circle_1.pos.x, circle_2.pos.x, circle_3.pos.x};
+    double _y[N] = {circle_1.pos.y, circle_2.pos.y, circle_3.pos.y};
+    double _r[N] = {circle_1.r, circle_2.r, circle_3.r};
+
+    struct data d = {n, _x, _y, _r};
+    gsl_multifit_function_fdf f;
+    double x_init[2] = {1.0, 1.0}; // initial values are uninformed as there is only 1 minima
+    gsl_vector_view x = gsl_vector_view_array (x_init, p);
+
+    f.f = &circle_f;
+    f.df = &circle_df;
+    f.fdf = &circle_fdf;
+    f.n = n;
+    f.p = p;
+    f.params = &d;
+
+    T = gsl_multifit_fdfsolver_lmsder;
+    s = gsl_multifit_fdfsolver_alloc(T, n, p);
+    gsl_multifit_fdfsolver_set(s, &f, &x.vector);
+
+    // print_state(iter, s);
+
+    do
+    {
+        iter++;
+        status = gsl_multifit_fdfsolver_iterate(s);
+
+        // printf ("status = %s\n", gsl_strerror(status));
+        // print_state(iter, s);
+
+        if (status)
+            break;
+
+        status = gsl_multifit_test_delta(s->dx, s->x, 1e-4, 1e-4);
+    }
+    while (status == GSL_CONTINUE && iter < 500);
+
+    result.x = gsl_vector_get(s->x, 0);
+    result.y = gsl_vector_get(s->x, 1);
+
+    gsl_multifit_fdfsolver_free(s);
+
+    return result;
+}
+
 int main(int argc, char *argv[])
-{   
+{  
     int sockfd, sarm_sockfd, portno, sarm_portno;
     char buffer[1024];
     char message[1024];
@@ -154,6 +295,8 @@ int main(int argc, char *argv[])
     int n;
     socklen_t len = sizeof(client_addr);
     char *sarm_ip;
+    int send_ready = 0;
+    position ans;
 
     // used for storing received data
     char pi_id[4];
@@ -162,9 +305,26 @@ int main(int argc, char *argv[])
     char pi_timestamp[32];
 
     // used for sending to SARM
-    char x[8];
-    char y[8];
+    char x_send[8];
+    char y_send[8];
     char own_timestamp[32];
+
+    // data for trilateration
+    circle circle_1;
+    circle circle_2;
+    circle circle_3;
+
+    // postions of the nodes
+    circle_1.pos.x = 0.0;
+    circle_1.pos.y = 0.0;
+    circle_2.pos.x = 4.0;
+    circle_2.pos.y = 0.0;
+    circle_3.pos.x = 2.0;
+    circle_3.pos.y = 3.0;
+
+    circle_1.r = 0.0;
+    circle_2.r = 0.0;
+    circle_3.r = 0.0;
 
     sarm_ip = "192.168.1.3";
     sarm_portno = 4040;
@@ -175,7 +335,7 @@ int main(int argc, char *argv[])
     }
     portno = atoi(argv[1]);
 
-    //connect_to_sarm(&sarm_sockfd, sarm_ip, sarm_portno, &sarm_addr);
+    connect_to_sarm(&sarm_sockfd, sarm_ip, sarm_portno, &sarm_addr);
     init_gateway_server(&sockfd, portno, &server_addr);
 
     while(1){
@@ -195,10 +355,29 @@ int main(int argc, char *argv[])
         strcpy(distance, rx_strings[2]);
         strcpy(pi_timestamp, rx_strings[3]);
 
-        get_timestamp(own_timestamp);
-        get_random_position(x, y); // temporary
-        create_message(local_name, x, y, own_timestamp, message);
-        //send_to_sarm(sarm_sockfd, message);
+        if (*pi_id == '1')
+            circle_1.r = strtod(distance, NULL);
+        else if (*pi_id == '2')
+            circle_2.r = strtod(distance, NULL);
+        else if (*pi_id == '3')
+            circle_3.r = strtod(distance, NULL);
+
+        if (circle_1.r != 0.0 && circle_2.r != 0.0 && circle_3.r != 0.0)
+            send_ready = 1;
+
+        if (send_ready)
+        {
+            ans = trilateration(circle_1, circle_2, circle_3);
+            get_timestamp(own_timestamp);  
+            snprintf(x_send, 8, "%f", ans.x*100.0);
+            snprintf(y_send, 8, "%f", ans.y*100.0);
+            create_message(local_name, x_send, y_send, own_timestamp, message);
+            send_to_sarm(sarm_sockfd, message);
+            send_ready = 0;
+            circle_1.r = 0.0;
+            circle_3.r = 0.0;
+            circle_3.r = 0.0;
+        }
     }
 
     close(sockfd);
