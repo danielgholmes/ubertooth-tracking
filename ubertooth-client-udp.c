@@ -9,8 +9,8 @@
 
 #define BUF_SIZE 1024
 #define SEND_RSSI_MSG_SIZE 32
-#define RSSI_BASE -54
-#define SIGNAL_PROP_CONST 0.77634 // in free space
+#define RSSI_BASE -54.0 
+#define SIGNAL_PROP_CONST 2.0 // in free space
 #define REF_RSSI -19.0
 #define ADV_CHANNEL 2402 // channel 37
 #define ID_FILENAME "/home/daniel/pi/id.txt"
@@ -24,6 +24,14 @@
 #define SCAN_RSP		4
 #define CONNECT_REQ		5
 #define ADV_SCAN_IND	6
+
+// Kalman filter values
+double P_prev;
+double P_cur;
+double x_prev;
+double x_cur;
+const double R = 1;
+const double Q = 0.0001;
 
 // from bluetooth_le_packet.h
 typedef struct _le_packet_t {
@@ -44,7 +52,6 @@ typedef struct _le_packet_t {
 typedef struct { // used for easily moving around the data
 	char id[8];
 	char local_name[100]; // assumption of length, may need to change this
-	char rssi[8] ;
 	char distance[32];
 	char timestamp[32];
 } ubertooth_rx;
@@ -85,7 +92,8 @@ libusb_device_handle* init_ubertooth()
 	return devh;
 }  
 
-void error(char *msg) {
+void error(char *msg) 
+{
     perror(msg);
     exit(0);
 }
@@ -160,17 +168,27 @@ void get_local_name(le_packet_t *le_pkt, ubertooth_rx *rx) { // was le_print
 			}
 		}
 	}
+	return;
 }
 
-float calculate_distance(int rssi)
+double calculate_distance(double rssi)
 {
-	return powf(10.0, (REF_RSSI - (float)rssi)/10.0*SIGNAL_PROP_CONST);
+	return powf(10.0, (REF_RSSI - rssi)/(10.0*SIGNAL_PROP_CONST));
+}
+
+double kalman_filter_rssi(int z)
+{
+	P_cur = (R*(P_prev + Q))/(P_prev + Q + R);
+	x_cur = x_prev + ((P_prev + Q)*((double)z - x_prev))/(P_prev + Q + R);
+	P_prev = P_cur;
+	x_prev = x_cur;
+	return x_cur;
 }
 
 ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *new_data)
 {
 	int i;
-	int rssi;
+	double rssi = 0.0;
 	ubertooth_rx rx = {0};
 	le_packet_t le_pkt;
 	usb_pkt_rx usb_pkt;
@@ -183,20 +201,35 @@ ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *new_data
 	{
 		decode_le(usb_pkt.data, usb_pkt.channel + ADV_CHANNEL, usb_pkt.clk100ns, &le_pkt);
 
-    	// can make a function here
-    	struct timeval tv;
-    	gettimeofday(&tv, NULL);
-   		long double tmstamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
-   		rssi = usb_pkt.rssi_max + RSSI_BASE;
-
-		sprintf(rx.rssi,"%i", rssi);
-		sprintf(rx.distance,"%f", calculate_distance(rssi));
-    	sprintf(rx.timestamp,"%Lf", tmstamp);
-
 		get_local_name(&le_pkt, &rx);
 
-		*new_data = 1;
-		return rx;
+		// can change this to loop for first few characters instead
+		if ( strcmp(rx.local_name, "iPhone") == 0 || strcmp(rx.local_name, "iPad") == 0 )
+		{
+			// getting the timestamp (can make a function here)
+	    	struct timeval tv;
+	    	gettimeofday(&tv, NULL);
+	   		long double tmstamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
+
+	   		rssi = (double)usb_pkt.rssi_max + RSSI_BASE;
+	   		printf("%f,", rssi);
+
+	   		rssi = kalman_filter_rssi((double)usb_pkt.rssi_max + RSSI_BASE);
+	   		printf("%f,", rssi);
+
+			// sprintf(rx.distance,"%f", calculate_distance((double)usb_pkt.rssi_max + RSSI_BASE));
+			sprintf(rx.distance,"%f", calculate_distance(rssi));
+			printf("%s\n", rx.distance);
+	    	sprintf(rx.timestamp,"%Lf", tmstamp);
+
+	    	*new_data = 1;
+	    	return rx;
+		}
+		// else FIX
+		// {
+		// 	rx = {0};
+		// 	return rx;
+		// }
 	}
 }
 // id, local name, distance, timestamp
@@ -214,6 +247,11 @@ void create_message(char *arg1, char *arg2, char *arg3, char *arg4, char *buffer
 
 int main(void) 
 {
+	P_prev = 1.0;
+	P_cur = 0.0;
+	x_prev = 0.0;
+	x_cur = 0.0;
+
 	char id[4];
 	char message[1024]; 
     int sockfd, server_port, client_port, new_data;
@@ -229,14 +267,20 @@ int main(void)
   	get_id(id);
     devh = init_ubertooth();
     init_socket(&sockfd, server_ip, server_port, &server_addr);
+
+    int n = 0;
     
-	while (1) {
+	while (n < 400) {
 		rx_data = get_ubertooth_data(devh, &new_data); // should pass in rx_data as a pointer, for consistancy
-		if (new_data && ( strcmp(rx_data.local_name, "iPhone") == 0 || strcmp(rx_data.local_name, "iPad") == 0 )){
+		if (new_data)
+		{
 			bzero(message, 1023);
 			create_message(id, rx_data.local_name, rx_data.distance, rx_data.timestamp, message); 
-			send_to_server(sockfd, &server_addr, message); 
+			// send_to_server(sockfd, &server_addr, message); 
 			new_data = 0;
+			n++;
+			// if (n == 50)
+			// 	printf("===================\n");
 		}
 	}
 
