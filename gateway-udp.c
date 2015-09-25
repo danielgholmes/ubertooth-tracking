@@ -22,7 +22,7 @@ typedef struct
 typedef struct
 {
     position pos;
-    int r;
+    double r;
 } circle;
 
 struct data {
@@ -247,7 +247,7 @@ position trilateration(circle circle_1, circle circle_2, circle circle_3)
     struct data d = {n, _x, _y, _r};
     gsl_multifit_function_fdf f;
     double x_init[2] = {1.0, 1.0}; // initial values are uninformed as there is only 1 minima
-    gsl_vector_view x = gsl_vector_view_array (x_init, p);
+    gsl_vector_view x = gsl_vector_view_array(x_init, p);
 
     f.f = &circle_f;
     f.df = &circle_df;
@@ -274,11 +274,11 @@ position trilateration(circle circle_1, circle circle_2, circle circle_3)
             break;
 
         status = gsl_multifit_test_delta(s->dx, s->x, 1e-4, 1e-4);
+
+        result.x = gsl_vector_get(s->x, 0);
+        result.y = gsl_vector_get(s->x, 1);
     }
     while (status == GSL_CONTINUE && iter < 500);
-
-    result.x = gsl_vector_get(s->x, 0);
-    result.y = gsl_vector_get(s->x, 1);
 
     gsl_multifit_fdfsolver_free(s);
 
@@ -369,8 +369,8 @@ int main(int argc, char *argv[])
         {
             ans = trilateration(circle_1, circle_2, circle_3);
             get_timestamp(own_timestamp);  
-            snprintf(x_send, 8, "%f", ans.x*100.0);
-            snprintf(y_send, 8, "%f", ans.y*100.0);
+            snprintf(x_send, 8, "%f", ans.x);
+            snprintf(y_send, 8, "%f", ans.y);
             create_message(local_name, x_send, y_send, own_timestamp, message);
             send_to_sarm(sarm_sockfd, message);
             send_ready = 0;
