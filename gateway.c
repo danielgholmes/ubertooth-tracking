@@ -1,3 +1,7 @@
+/* Filename: gateway.c
+ *  
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -16,7 +20,7 @@
 #define N 3
 #define NUM_OF_DEVICES 2
 #define NUM_OF_NODES 3
-#define TIME_FRAME 100 // milli-seconds
+#define TIME_FRAME 50 // milli-seconds
 
 typedef struct {
     double x;
@@ -48,7 +52,6 @@ struct data {
     double *_y;
     double *_r;
 };
-
 
 int circle_f(const gsl_vector *x, void *data, gsl_vector *f)
 {
@@ -101,36 +104,10 @@ int circle_fdf(const gsl_vector *x, void *data, gsl_vector *f, gsl_matrix *J)
     return GSL_SUCCESS;
 }
 
-void print_state (size_t iter, gsl_multifit_fdfsolver * s)
-{
-    printf ("iter: %3u x = % 15.8f % 15.8f % 15.8f "
-            "|f(x)| = %g\n",
-            iter,
-            gsl_vector_get(s->x, 0),
-            gsl_vector_get(s->x, 1),
-            gsl_blas_dnrm2(s->f));
-}
-
 void error(const char *msg)
 {
    perror(msg);
    exit(1);
-}
-
-void append_timestamp(char *str)
-{
-    char temp[256];
-
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    long double timestamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
-    printf("Saved Timestamp: %Lf\n", timestamp);
-
-    snprintf(temp, 512, "%Lf", timestamp);
-
-    strcat(str, ",");
-    strcat(str, temp);
-    return;
 }
 
 void send_to_sarm(int from_socket, char *message)
@@ -196,7 +173,7 @@ void connect_to_sarm(int *sockfd, char *hostname, int port, struct sockaddr_in *
 void get_timestamp(char *str)
 {
     struct timeval tv;
-    gettimeofday(&tv,NULL);
+    gettimeofday(&tv, NULL);
     long double timestamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
     snprintf(str, 32, "%Lf", timestamp);
     return;
@@ -266,15 +243,10 @@ position trilateration(circle circle_1, circle circle_2, circle circle_3)
     s = gsl_multifit_fdfsolver_alloc(T, n, p);
     gsl_multifit_fdfsolver_set(s, &f, &x.vector);
 
-    // print_state(iter, s);
-
     do
     {
         iter++;
         status = gsl_multifit_fdfsolver_iterate(s);
-
-        // printf ("status = %s\n", gsl_strerror(status));
-        // print_state(iter, s);
 
         if (status)
             break;
@@ -298,7 +270,6 @@ void reset_device(struct device *dev)
     dev->count = 0;
     dev->base_id = 0;
     dev->ref_timestamp = 0.0;
-//    strcpy(dev->local_name, "");
 
     int c;
     for (c = 0; c < NUM_OF_NODES; c++){
@@ -332,61 +303,47 @@ void sync_message(char rx_strings0[], char rx_strings1[], char rx_strings2[],
     rx_timestamp = strtold(rx_strings3, NULL);
     rx_timestamp = rx_timestamp*1000;
 
+    // TODO: tidy up the following code
+
     int i;
     for (i = 0; i < NUM_OF_DEVICES; i++)
     { // we ignore packets from node with base_id because we have received one from that node already
-//        printf("%s\n", devices[i].local_name);
-//        printf("%s\n", local_name);
         if ( strcmp(devices[i].local_name, local_name) == 0 && rx_id != devices[i].base_id ){
-//            printf("first condition met\n");
             if ( devices[i].nodes[rx_id-1].distance == 0.0 ){ // information from that node has not been recorded
-//                printf("second condition met\n");
                 // zero value of the distance shows that the value hasnt been used as yet
                 if ( abs(rx_timestamp - devices[i].ref_timestamp) <= TIME_FRAME){ // also means that rx_timestamp is 0
-//                    printf("third condition met\n");
                     devices[i].nodes[rx_id-1].distance = rx_distance;
                     devices[i].count = devices[i].count + 1;
-                    devices[i].ref_timestamp = rx_timestamp; // **should be base id
                     break;
                 }
                 else // it took too long to receive packets from other nodes
                 {
-//                    printf("too long to receive packets...\n");
                     reset_device(&devices[i]); // reset the information for this device
                     strcpy(devices[i].local_name, local_name); // now set this value as the new base value
                     devices[i].ref_timestamp = rx_timestamp;
                     devices[i].nodes[rx_id-1].distance = rx_distance;
                     devices[i].count = devices[i].count + 1;
                     devices[i].base_id = rx_id; // this is the reference node
-//                    printf("base_id for %s: %d\n", local_name, rx_id);
                     break;
                 }
             }
             else break; // means that we received from device with rx_id already, so ignore it
         }
         else if ( strcmp(devices[i].local_name, local_name) == 0 && rx_id == devices[i].base_id ) // if new device detected
-        {
-//            printf("!!!!!!!!!!!!!!! rx_id: %d, base_id: %d !!!!!!!!!!!!!!!!!!!\n", rx_id, devices[i].base_id);
             break;
-        }
-
-        // else if ( strcmp(devices[i].local_name, "") == 0 && strcmp(devices[i].local_name, local_name) != 0) // if new device detected
         else if (strcmp(devices[i].local_name, "") == 0) {
-//            printf("new device sync.\n");
             reset_device(&devices[i]); // reset the information for this device
             strcpy(devices[i].local_name, local_name); // save the new found device
             devices[i].ref_timestamp = rx_timestamp; // first timestamp received for this new device
             devices[i].nodes[rx_id-1].distance = rx_distance;
             devices[i].count = devices[i].count + 1;
             devices[i].base_id = rx_id; // this is the reference node
-//            printf("base_id for %s: %d\n", local_name, rx_id);
             break;
         }
     }
 
     if ( devices[i].count == 3 ) // check if we have received 3 distances within the timeframe
     {
-//        printf("Ready to send! %s\n", devices[i].local_name);
         *send_device = i;
         return;
     }
@@ -460,19 +417,12 @@ int main()
 
         sync_message(rx_strings[0], rx_strings[1], rx_strings[2], rx_strings[3], devices, &send_device);
 
-//        printf("devices[0].local_name: %s\n", devices[0].local_name);
-//        printf("devices[1].local_name: %s\n", devices[1].local_name);
-
         if (send_device >= 0)
         {
             circle_1.r = devices[send_device].nodes[0].distance;
             circle_2.r = devices[send_device].nodes[1].distance;
             circle_3.r = devices[send_device].nodes[2].distance;
             strcpy(local_name, devices[send_device].local_name);
-
-            printf("circle_1.r: %f\n", circle_1.r);
-            printf("circle_2.r: %f\n", circle_2.r);
-            printf("circle_3.r: %f\n", circle_3.r);
 
             ans.x = 0.0;
             ans.y = 0.0;
@@ -497,40 +447,6 @@ int main()
             circle_3.r = 0.0;
             circle_3.r = 0.0;
         }
-
-        // char rx_id[4];
-        // char rx_timestamp[32];
-        // char distance[16];
-
-        // // temporarily store the received data
-        // strcpy(rx_id, rx_strings[0]);
-        // strcpy(local_name, rx_strings[1]);
-        // strcpy(distance, rx_strings[2]);
-        // strcpy(rx_timestamp, rx_strings[3]);
-
-        // if (*rx_id == '1')
-        //     circle_1.r = strtod(distance, NULL);
-        // else if (*rx_id == '2')
-        //     circle_2.r = strtod(distance, NULL);
-        // else if (*rx_id == '3')
-        //     circle_3.r = strtod(distance, NULL);
-
-        // if (circle_1.r != 0.0 && circle_2.r != 0.0 && circle_3.r != 0.0)
-        //     send_device = 1;
-
-        // if (send_device)
-        // {
-        //     ans = trilateration(circle_1, circle_2, circle_3);
-        //     get_timestamp(own_timestamp);
-        //     snprintf(x_send, 8, "%f", ans.x);
-        //     snprintf(y_send, 8, "%f", ans.y);
-        //     create_message(local_name, x_send, y_send, own_timestamp, message);
-        //     send_to_sarm(sarm_sockfd, message);
-        //     send_device = 0;
-        //     circle_1.r = 0.0;
-        //     circle_3.r = 0.0;
-        //     circle_3.r = 0.0;
-        // }
     } // end while
 
     close(sockfd);
