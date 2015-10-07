@@ -123,7 +123,7 @@ float calculate_distance(int rssi)
 	return powf(10.0, (REF_RSSI - (float)rssi)/10.0*SIGNAL_PROP_CONST);
 }
 
-ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *samples, int *total)
+ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *samples, int *total, FILE *fptr)
 {
 	int i;
 	int8_t rssi;
@@ -143,41 +143,58 @@ ubertooth_rx get_ubertooth_data(struct libusb_device_handle *devh, int *samples,
 	{
 		decode_le(usb_pkt.data, usb_pkt.channel + ADV_CHANNEL, usb_pkt.clk100ns, &le_pkt);
 
-		rx.rec_type = 0x01;
+		// rx.rec_type = 0x01;
 		rx.rssi = usb_pkt.rssi_max + RSSI_BASE;
 
 		// rx.distance = calculate_distance(rx.rssi);
 		// printf("Distance: %f\n", rx.distance);
     	
     	// can make a function here
-    	struct timeval tv;
-    	gettimeofday(&tv, NULL);
-   		long double tmstamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
+    	// struct timeval tv;
+    	// gettimeofday(&tv, NULL);
+   		// long double tmstamp = (long double)tv.tv_sec + (long double)tv.tv_usec/1000000.0;
 
-    	rx.timestamp = tmstamp;
+    	// rx.timestamp = tmstamp;
 
 		get_local_name(&le_pkt, &rx);
-		printf("RSSI: %d\n", rx.rssi);
-		*total += rx.rssi*(-1);
-		printf("Total: %d\n", *total);
-		*samples = *samples + 1;
-		printf("Samples: %d\n", *samples);
-		return rx;
+
+		if ( strcmp(rx.local_name, "~iPhone") == 0 ){
+			printf("RSSI: %d\n", rx.rssi);
+			*total += rx.rssi*(-1);
+			printf("Total: %d\n", *total);
+			*samples = *samples + 1;
+			printf("Samples: %d\n", *samples);
+
+			fprintf(fptr, "%d,", *samples); // write sample number value to a file
+			fprintf(fptr, "%d\n", rx.rssi); // write rssi value to a file
+
+			return rx;
+		}
+		else return;
+		
 	}
 }
 
 int main(void) 
 {
-	int samples = 1; // counter for number of samples
+	int samples = 0; // counter for number of samples
 	float n = 0.0; // signal propagation constant
-	int A = 0; // rssi at 1m
-	int rssi = 0;
+	float A = 0.0; // rssi at 1m
+	float rssi = 0.0;
 	int total = 0;
-	int max_dist = 10;
-	float n_total = 0;
+	int max_dist = 2;
+	float n_total = 0.0;
     struct libusb_device_handle *devh = NULL;
     char enter;
+	FILE *fptr;
 
+	fptr = fopen("/home/daniel/rssi.txt","w");
+
+	if(fptr == NULL){
+	  printf("Error!");
+	  exit(1);
+	}
+	
     devh = init_ubertooth();
 
     ubertooth_rx rx_data;
@@ -185,36 +202,43 @@ int main(void)
     printf("Calculation of the average of A at 1m. Press enter when ready.\n");
 	enter = getchar();
 
-	while (samples <= 1000) {
-		rx_data = get_ubertooth_data(devh, &samples, &total);
+	while (samples < 1000) {
+		rx_data = get_ubertooth_data(devh, &samples, &total, fptr);
 	}
 
-    A = (total/samples)*(-1.0);
-    printf("Average of A: %d\n", A);
+    A = ((float)total)/((float)samples)*(-1.0);
+    printf("Average of A: %f\n", A);
     ubertooth_stop(devh);
 
     printf("Calculation of n.\n");
     int d = 0;
-    for (d = 1; d < max_dist + 1; ++d)
+    for (d = 2; d < max_dist + 1; ++d)
     {
     	devh = init_ubertooth();
     	samples = 0;
     	total = 0;
-    	rssi = 0;
+    	rssi = 0.0;
     	printf("Move to %dm and press enter.\n", d);
     	enter = getchar();
 
-    	while (samples <= 500) {
-			rx_data = get_ubertooth_data(devh, &samples, &total);
+    	while (samples < 500) {
+			rx_data = get_ubertooth_data(devh, &samples, &total, fptr);
 		}
 
-		rssi = (total/samples)*(-1.0);
-		n_total += (float)rssi/((float)A - 10.0*logf((float)d));
+		rssi = ((float)total/((float)samples))*(-1.0);
+		printf("RSSI Final: %f\n", rssi);
+		printf("A: %f\n", A);
+		printf("d: %d\n", d);
+		n_total = n_total + (rssi - A)/((-1.0)*10.0*logf((float)d));
+		// n_total = n_total + (rssi - A)/(-10.0*logf((float)d));
+		printf("n_total: %f\n", n_total);
 		ubertooth_stop(devh);
     }
 
-    n = n_total/(float)max_dist;
+    n = n_total/((float)max_dist - 1.0);
     printf("n = %f\n", n);
+    fclose(fptr);
+
     
     return 0;
 }
